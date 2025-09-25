@@ -22,7 +22,7 @@ type RequestBody struct {
 // validateRequest reads and parses the request body
 func validateRequest(r *http.Request) (*RequestBody, int, error) {
 	if r.Method != http.MethodPost {
-		return nil, http.StatusBadRequest, fmt.Errorf("Only POST method allowed")
+		return nil, http.StatusBadRequest, fmt.Errorf("only POST method allowed")
 	}
 
 	body, err := io.ReadAll(r.Body)
@@ -68,21 +68,25 @@ func extractProviderAndKey(r *http.Request, keysFile string) <-chan KeyData {
 
 		virtualKey, _ := getBearerToken(r)
 		ch := GetKeyDataAsync(keysFile, virtualKey)
-		if keyData, ok := <-ch; ok {
-			resultChan <- keyData
-		} else {
-			log.Println("Failed to make the request, check your Virtual Key.")
+		keyData, found := <-ch
+		if !found {
+			return
 		}
-	}()
 
+		resultChan <- keyData
+
+	}()
 	return resultChan
 }
 
 // extractKeyData wraps the existing extractProviderAndKey call
-func extractKeyData(r *http.Request) (KeyData, bool) {
+func extractKeyData(r *http.Request) (KeyData, error) {
 	ch := extractProviderAndKey(r, KEYS_JSON)
 	keyData, ok := <-ch
-	return keyData, ok
+	if !ok {
+		return KeyData{}, fmt.Errorf("unauthorized: invalid or missing API key")
+	}
+	return keyData, nil
 }
 
 // sendToProvider sends the request body to the LLM provider concurrently
@@ -164,9 +168,9 @@ func chatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	keyData, ok := extractKeyData(r)
-	if !ok {
-		http.Error(w, "Invalid or missing API key", http.StatusUnauthorized)
+	keyData, err := extractKeyData(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
 
