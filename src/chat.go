@@ -6,29 +6,34 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"strings"
 	"time"
+)
 
-	"net/http"
+const (
+	RequestTimeout = 20 * time.Second
 )
 
 type RequestBody struct {
 	Prompt string `json:"prompt"`
 }
 
-// ResponseBody represents the JSON response
-type ResponseBody struct {
-	Reply string `json:"reply"`
-}
-
 // validateRequest reads and parses the request body
 func validateRequest(r *http.Request) (*RequestBody, int, error) {
-	// Read body
+	if r.Method != http.MethodPost {
+		return nil, http.StatusBadRequest, fmt.Errorf("Only POST method allowed")
+	}
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		return nil, http.StatusBadRequest, fmt.Errorf("failed to read request body: %w", err)
 	}
-	defer r.Body.Close()
+	defer func() {
+		if closeError := r.Body.Close(); closeError != nil {
+			log.Println("Error closing response body:", closeError)
+		}
+	}()
 
 	// Parse JSON
 	var req RequestBody
@@ -73,73 +78,111 @@ func extractProviderAndKey(r *http.Request, keysFile string) <-chan KeyData {
 	return resultChan
 }
 
-// chatCompletion sends the request to the desired LLM.
-func chatCompletion(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Only POST method allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Extract virtual key
+// extractKeyData wraps the existing extractProviderAndKey call
+func extractKeyData(r *http.Request) (KeyData, bool) {
 	ch := extractProviderAndKey(r, KEYS_JSON)
 	keyData, ok := <-ch
-	if !ok {
-		http.Error(w, "Invalid or missing API key", http.StatusUnauthorized)
-		return
-	}
+	return keyData, ok
+}
 
-	// Read the original request body
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
-	// Concurrently send request to the provider
-	respChan := make(chan *http.Response)
-	errChan := make(chan error)
+// sendToProvider sends the request body to the LLM provider concurrently
+func sendToProvider(r *http.Request, keyData KeyData, body []byte) (<-chan *http.Response, <-chan error) {
+	respChan := make(chan *http.Response, 1)
+	errChan := make(chan error, 1)
 
 	go func() {
+		defer close(respChan)
+		defer close(errChan)
+
 		req, err := http.NewRequest("POST", providers[keyData.Provider], bytes.NewBuffer(body))
 		if err != nil {
 			errChan <- err
 			return
 		}
 
-		// Copy headers from original request
+		// Copy headers except Authorization
 		for name, values := range r.Header {
+			if strings.EqualFold(name, "Authorization") {
+				continue
+			}
 			for _, v := range values {
 				req.Header.Add(name, v)
 			}
 		}
 
-		// Replace Authorization with actual API key
 		req.Header.Set("Authorization", "Bearer "+keyData.ApiKey)
-
 		client := &http.Client{Timeout: 15 * time.Second}
 		resp, err := client.Do(req)
 		if err != nil {
 			errChan <- err
 			return
 		}
+
 		respChan <- resp
 	}()
 
-	// Wait for response or error
+	return respChan, errChan
+}
+
+// forwardResponse writes the provider response to the client
+func forwardResponse(w http.ResponseWriter, resp *http.Response) error {
+	defer func() {
+		if closeError := resp.Body.Close(); closeError != nil {
+			log.Println("Error closing response body:", closeError)
+		}
+	}()
+	body, readError := io.ReadAll(resp.Body)
+	if readError != nil {
+		return readError
+	}
+
+	for name, values := range resp.Header {
+		for _, v := range values {
+			w.Header().Add(name, v)
+		}
+	}
+
+	w.WriteHeader(resp.StatusCode)
+	if _, writeError := w.Write(body); writeError != nil {
+		return fmt.Errorf("failed to write response body to client: %w", writeError)
+	}
+	return nil
+}
+
+// chatCompletion is now very concise
+func chatCompletion(w http.ResponseWriter, r *http.Request) {
+	reqBody, code, err := validateRequest(r)
+	if code != http.StatusOK {
+		w.WriteHeader(code)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			encodeErr := json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			if encodeErr != nil {
+				log.Println("Failed to encode JSON error:", encodeErr)
+			}
+		}
+		return
+	}
+
+	keyData, ok := extractKeyData(r)
+	if !ok {
+		http.Error(w, "Invalid or missing API key", http.StatusUnauthorized)
+		return
+	}
+
+	body, _ := json.Marshal(reqBody)
+	respChan, errChan := sendToProvider(r, keyData, body)
+
 	select {
 	case resp := <-respChan:
-		defer resp.Body.Close()
-		respBody, _ := io.ReadAll(resp.Body)
-
-		// Copy status code and body to client
-		w.WriteHeader(resp.StatusCode)
-		w.Write(respBody)
+		if resp == nil || forwardResponse(w, resp) != nil {
+			http.Error(w, "Failed to forward provider response", http.StatusBadGateway)
+		}
 
 	case err := <-errChan:
 		http.Error(w, err.Error(), http.StatusBadGateway)
 
-	case <-time.After(20 * time.Second):
+	case <-time.After(RequestTimeout):
 		http.Error(w, "Timeout calling provider", http.StatusGatewayTimeout)
 	}
 }
