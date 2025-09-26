@@ -73,3 +73,8 @@ keys.json example:
         }
 }
 ```
+
+## Important Note for the assignment
+
+I currently don't have quota for both OpenAI and Anthropic. As a result, I could not make successful chats with
+http requests to these providers. I did add images to show the data is successfully delivered to them.
