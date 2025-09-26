@@ -12,5 +12,6 @@ func main() {
 	}
 	http.HandleFunc("/chat/completion", chatCompletion)
 	http.HandleFunc("/health", healthCheck)
+	http.HandleFunc("/metrics", metricsHandler)
 	log.Fatal(http.ListenAndServe(PORT, nil))
 }
