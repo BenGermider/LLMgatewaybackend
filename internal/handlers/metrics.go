@@ -10,7 +10,10 @@ import (
 	"llmgatewaybackend/internal/config"
 )
 
+// MetricsHandler handle the metrics request, calculates them and returns to the user.
 func MetricsHandler(w http.ResponseWriter, r *http.Request) {
+
+	// Tries opening the data for calculations, trigger an error if fails.
 	bytes, err := os.ReadFile(config.UsageFile)
 	if err != nil {
 		http.Error(w, "Failed to read logs file", http.StatusInternalServerError)
@@ -30,6 +33,7 @@ func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 		log.Println(string(logBytes))
 	}
 
+	// Metrics calculations - counts the time and the requests to calculate average request time/
 	totalDuration := int64(0)
 	metrics := models.Metrics{
 		RequestsPerProvider: make(map[string]int64),
@@ -38,7 +42,7 @@ func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	for _, usage := range logsMap {
 		metrics.TotalRequests += int64(usage.RequestCount)
 		metrics.RequestsPerProvider[usage.Provider] += int64(usage.RequestCount)
-		totalDuration += usage.TotalRequestTimeMs // approximate total duration
+		totalDuration += usage.TotalRequestTimeMs
 	}
 
 	if metrics.TotalRequests > 0 {
@@ -47,7 +51,7 @@ func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 		metrics.AverageResponseTime = 0
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(config.ContentType, config.ApplicationJson)
 	encodeErr := json.NewEncoder(w).Encode(metrics)
 	if encodeErr != nil {
 		return
