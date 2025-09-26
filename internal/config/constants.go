@@ -1,17 +1,19 @@
-package main
+package config
 
 const (
-	PORT       = ":8080"
-	KEYS_JSON  = "keys.json"
-	USAGE_FILE = "usage.json"
+	PORT      = ":8080"
+	KeysJson  = "keys.json"
+	UsageFile = "usage.json"
+
+	MaxRequestsPerHour = 100
 )
 
-var chatProviders = map[string]string{
+var ChatProviders = map[string]string{
 	"anthropic": "https://api.anthropic.com/v1/complete",
 	"openai":    "https://api.openai.com/v1/chat/completions",
 }
 
-var healthProviders = map[string]string{
+var HealthProviders = map[string]string{
 	"anthropic": "https://api.anthropic.com/v1/models",
 	"openai":    "https://status.openai.com/api/v2/summary.json",
 }

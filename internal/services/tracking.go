@@ -1,35 +1,43 @@
-package main
+package services
 
 import (
 	"encoding/json"
 	"fmt"
+	"llmgatewaybackend/internal/config"
+	"llmgatewaybackend/internal/models"
 	"log"
 	"os"
+	"sync"
 	"time"
 )
 
-func initUsageFile() error {
-	emptyUsage := make(map[string]*Usage)
+var (
+	usageMap   map[string]*models.Usage
+	usageMutex sync.Mutex
+)
+
+func InitUsageFile() error {
+	emptyUsage := make(map[string]*models.Usage)
 	bytes, err := json.MarshalIndent(emptyUsage, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal empty usage map: %w", err)
 	}
-	if err := os.WriteFile(USAGE_FILE, bytes, 0644); err != nil {
+	if err := os.WriteFile(config.UsageFile, bytes, 0644); err != nil {
 		return fmt.Errorf("failed to write usage file: %w", err)
 	}
 
 	// Also initialize the in-memory map
-	usageMap = make(map[string]*Usage)
+	usageMap = make(map[string]*models.Usage)
 	return nil
 }
 
-func canSendMessage(virtualKey, provider string) (bool, error) {
+func CanSendMessage(virtualKey, provider string) (bool, error) {
 	usageMutex.Lock()
 	defer usageMutex.Unlock()
 
 	// Step 1: Read usage file
-	usageMap := make(map[string]*Usage)
-	bytes, err := os.ReadFile(USAGE_FILE)
+	usageMap = make(map[string]*models.Usage)
+	bytes, err := os.ReadFile(config.UsageFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// File doesn't exist, assume no usage yet
@@ -55,20 +63,20 @@ func canSendMessage(virtualKey, provider string) (bool, error) {
 	}
 
 	// Step 4: Check if max requests reached
-	if u.RequestCount >= MaxRequestsPerHour {
+	if u.RequestCount >= config.MaxRequestsPerHour {
 		return false, nil
 	}
 
 	return true, nil
 }
 
-func trackUsageFile(virtualKey string, provider string, requestTimeMs int64) error {
+func TrackUsageFile(virtualKey string, provider string, requestTimeMs int64) error {
 	usageMutex.Lock()
 	defer usageMutex.Unlock()
 
 	// Step 1: Read the usage file
-	usageMap := make(map[string]*Usage)
-	bytes, err := os.ReadFile(USAGE_FILE)
+	usageMap = make(map[string]*models.Usage)
+	bytes, err := os.ReadFile(config.UsageFile)
 	if err == nil {
 		if err := json.Unmarshal(bytes, &usageMap); err != nil {
 			return fmt.Errorf("failed to parse usage file: %w", err)
@@ -79,7 +87,7 @@ func trackUsageFile(virtualKey string, provider string, requestTimeMs int64) err
 	u, exists := usageMap[virtualKey]
 	if !exists {
 		// Create new usage entry
-		usageMap[virtualKey] = &Usage{
+		usageMap[virtualKey] = &models.Usage{
 			Provider:           provider,
 			VirtualKey:         virtualKey,
 			RequestCount:       1,
@@ -107,7 +115,7 @@ func trackUsageFile(virtualKey string, provider string, requestTimeMs int64) err
 	if err != nil {
 		return fmt.Errorf("failed to marshal usage map: %w", err)
 	}
-	if err := os.WriteFile(USAGE_FILE, updatedBytes, 0644); err != nil {
+	if err := os.WriteFile(config.UsageFile, updatedBytes, 0644); err != nil {
 		return fmt.Errorf("failed to write usage file: %w", err)
 	}
 

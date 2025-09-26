@@ -1,33 +1,18 @@
-package main
+package config
 
 import (
 	"encoding/json"
+	"llmgatewaybackend/internal/models"
 	"log"
 	"os"
 )
-
-// Structs to parse keys.json
-
-type KeyData struct {
-	Provider string `json:"provider"`
-	ApiKey   string `json:"api_key"`
-}
-
-type KeyDataVirtualKey struct {
-	KeyData    KeyData
-	VirtualKey string
-}
-
-type KeysFile struct {
-	VirtualKeys map[string]KeyData `json:"virtual_keys"`
-}
 
 // Reads a json file, parses it according to the structs above and returns the desired provider and api-key.
 // filename - name of file to open
 // key - virtual key to get data with
 
-func GetKeyDataAsync(filename string, key string) <-chan KeyData {
-	resultChan := make(chan KeyData)
+func GetKeyDataAsync(filename string, key string) <-chan models.KeyData {
+	resultChan := make(chan models.KeyData)
 
 	go func() {
 		defer close(resultChan)
@@ -40,7 +25,7 @@ func GetKeyDataAsync(filename string, key string) <-chan KeyData {
 		}
 
 		// Parse the json.
-		var data KeysFile
+		var data models.KeysFile
 		err = json.Unmarshal(bytes, &data)
 		if err != nil {
 			log.Println("Error parsing JSON:", err)
