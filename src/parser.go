@@ -12,6 +12,12 @@ type KeyData struct {
 	Provider string `json:"provider"`
 	ApiKey   string `json:"api_key"`
 }
+
+type KeyDataVirtualKey struct {
+	KeyData    KeyData
+	VirtualKey string
+}
+
 type KeysFile struct {
 	VirtualKeys map[string]KeyData `json:"virtual_keys"`
 }
