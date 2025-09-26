@@ -1,8 +1,9 @@
 package main
 
 const (
-	PORT      = ":8080"
-	KEYS_JSON = "keys.json"
+	PORT       = ":8080"
+	KEYS_JSON  = "keys.json"
+	USAGE_FILE = "usage.json"
 )
 
 var chatProviders = map[string]string{

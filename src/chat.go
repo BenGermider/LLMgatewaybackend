@@ -21,10 +21,12 @@ type RequestBody struct {
 }
 
 type Usage struct {
-	VirtualKey   string
-	RequestCount int
-	TokensUsed   int
-	LastReset    time.Time
+	Provider           string
+	VirtualKey         string
+	TotalRequestTimeMs int64
+	RequestCount       int
+	TokensUsed         int
+	LastReset          time.Time
 }
 
 var usageMap = make(map[string]*Usage)
@@ -189,7 +191,7 @@ func chatCompletion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	if err := trackUsageFile(keyDataVirtualKey.VirtualKey); err != nil {
+	if canSend, _ := canSendMessage(keyDataVirtualKey.VirtualKey, keyDataVirtualKey.KeyData.Provider); canSend == false {
 		http.Error(w, err.Error(), http.StatusTooManyRequests)
 		return
 	}
@@ -218,6 +220,10 @@ func chatCompletion(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		if trackErr := trackUsageFile(keyDataVirtualKey.VirtualKey, keyDataVirtualKey.KeyData.Provider, totalTime); trackErr != nil {
+			log.Println("Failed to track usage file:", trackErr)
 		}
 
 		outputLog := Log{
