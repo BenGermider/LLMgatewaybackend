@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,18 @@ const (
 type RequestBody struct {
 	Prompt string `json:"prompt"`
 }
+
+type Usage struct {
+	VirtualKey   string
+	RequestCount int
+	TokensUsed   int
+	LastReset    time.Time
+}
+
+var usageMap = make(map[string]*Usage)
+var usageMutex = &sync.Mutex{}
+
+const MaxRequestsPerHour = 100
 
 // validateRequest reads and parses the request body
 func validateRequest(r *http.Request) (*RequestBody, int, error) {
@@ -176,6 +189,17 @@ func chatCompletion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
+	if err := trackUsageFile(keyDataVirtualKey.VirtualKey); err != nil {
+		http.Error(w, err.Error(), http.StatusTooManyRequests)
+		return
+	}
+	usageLog, err := json.MarshalIndent(usageMap[keyDataVirtualKey.VirtualKey], "", "  ")
+	if err != nil {
+		log.Println("Failed to marshal log:", err)
+	} else {
+		fmt.Println(string(usageLog))
+	}
+
 	body, _ := json.Marshal(reqBody)
 
 	respChan, errChan := sendToProvider(r, keyDataVirtualKey.KeyData, body)
