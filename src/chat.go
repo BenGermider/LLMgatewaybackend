@@ -53,8 +53,8 @@ func getBearerToken(r *http.Request) (string, bool) {
 	return "", false
 }
 
-func extractProviderAndKey(r *http.Request, keysFile string) <-chan KeyData {
-	resultChan := make(chan KeyData)
+func extractProviderAndKey(r *http.Request, keysFile string) <-chan KeyDataVirtualKey {
+	resultChan := make(chan KeyDataVirtualKey)
 
 	go func() {
 		defer close(resultChan)
@@ -73,18 +73,21 @@ func extractProviderAndKey(r *http.Request, keysFile string) <-chan KeyData {
 			return
 		}
 
-		resultChan <- keyData
+		resultChan <- KeyDataVirtualKey{
+			KeyData:    keyData,
+			VirtualKey: virtualKey,
+		}
 
 	}()
 	return resultChan
 }
 
 // extractKeyData wraps the existing extractProviderAndKey call
-func extractKeyData(r *http.Request) (KeyData, error) {
+func extractKeyData(r *http.Request) (KeyDataVirtualKey, error) {
 	ch := extractProviderAndKey(r, KEYS_JSON)
 	keyData, ok := <-ch
 	if !ok {
-		return KeyData{}, fmt.Errorf("unauthorized: invalid or missing API key")
+		return KeyDataVirtualKey{}, fmt.Errorf("unauthorized: invalid or missing API key")
 	}
 	return keyData, nil
 }
@@ -98,7 +101,7 @@ func sendToProvider(r *http.Request, keyData KeyData, body []byte) (<-chan *http
 		defer close(respChan)
 		defer close(errChan)
 
-		req, err := http.NewRequest("POST", providers[keyData.Provider], bytes.NewBuffer(body))
+		req, err := http.NewRequest("POST", chatProviders[keyData.Provider], bytes.NewBuffer(body))
 		if err != nil {
 			errChan <- err
 			return
@@ -129,7 +132,7 @@ func sendToProvider(r *http.Request, keyData KeyData, body []byte) (<-chan *http
 }
 
 // forwardResponse writes the provider response to the client
-func forwardResponse(w http.ResponseWriter, resp *http.Response) error {
+func forwardResponse(w http.ResponseWriter, resp *http.Response) ([]byte, error) {
 	defer func() {
 		if closeError := resp.Body.Close(); closeError != nil {
 			log.Println("Error closing response body:", closeError)
@@ -137,7 +140,7 @@ func forwardResponse(w http.ResponseWriter, resp *http.Response) error {
 	}()
 	body, readError := io.ReadAll(resp.Body)
 	if readError != nil {
-		return readError
+		return nil, readError
 	}
 
 	for name, values := range resp.Header {
@@ -148,13 +151,13 @@ func forwardResponse(w http.ResponseWriter, resp *http.Response) error {
 
 	w.WriteHeader(resp.StatusCode)
 	if _, writeError := w.Write(body); writeError != nil {
-		return fmt.Errorf("failed to write response body to client: %w", writeError)
+		return nil, fmt.Errorf("failed to write response body to client: %w", writeError)
 	}
-	return nil
+	return body, nil
 }
 
-// chatCompletion is now very concise
 func chatCompletion(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	reqBody, code, err := validateRequest(r)
 	if code != http.StatusOK {
 		w.WriteHeader(code)
@@ -168,19 +171,47 @@ func chatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	keyData, err := extractKeyData(r)
+	keyDataVirtualKey, err := extractKeyData(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-
 	body, _ := json.Marshal(reqBody)
-	respChan, errChan := sendToProvider(r, keyData, body)
+
+	respChan, errChan := sendToProvider(r, keyDataVirtualKey.KeyData, body)
+
+	totalTime := time.Since(start).Milliseconds()
 
 	select {
+
 	case resp := <-respChan:
-		if resp == nil || forwardResponse(w, resp) != nil {
+
+		if resp == nil {
 			http.Error(w, "Failed to forward provider response", http.StatusBadGateway)
+		}
+
+		respBody, err := forwardResponse(w, resp)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		outputLog := Log{
+			Timestamp:  start.UTC().Format("2006-01-02T15:04:05.000Z"),
+			VirtualKey: keyDataVirtualKey.VirtualKey,
+			Provider:   keyDataVirtualKey.KeyData.Provider,
+			Method:     r.Method,
+			Status:     resp.StatusCode,
+			DurationMs: totalTime,
+			Request:    body,
+			Response:   respBody,
+		}
+
+		logJSON, err := json.MarshalIndent(outputLog, "", "  ")
+		if err != nil {
+			log.Println("Failed to marshal log:", err)
+		} else {
+			fmt.Println(string(logJSON))
 		}
 
 	case err := <-errChan:
