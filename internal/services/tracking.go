@@ -16,6 +16,7 @@ var (
 	usageMutex sync.Mutex
 )
 
+// InitUsageFile creates a new database for metrics.
 func InitUsageFile() error {
 	emptyUsage := make(map[string]*models.Usage)
 	bytes, err := json.MarshalIndent(emptyUsage, "", "  ")
@@ -30,6 +31,7 @@ func InitUsageFile() error {
 	return nil
 }
 
+// CanSendMessage makes sure user is not rate limited and can send the request.
 func CanSendMessage(virtualKey, provider string) (bool, error) {
 	usageMutex.Lock()
 	defer usageMutex.Unlock()
@@ -48,27 +50,29 @@ func CanSendMessage(virtualKey, provider string) (bool, error) {
 		return false, fmt.Errorf("failed to parse usage file: %w", err)
 	}
 
-	u, exists := usageMap[virtualKey]
-	if !exists || u.Provider != provider {
+	currentUse, exists := usageMap[virtualKey]
+	if !exists || currentUse.Provider != provider {
 		// No usage yet for this key/provider
 		return true, nil
 	}
 
-	if time.Since(u.LastReset) > time.Hour {
+	if time.Since(currentUse.LastReset) > time.Hour {
 		return true, nil
 	}
 
-	if u.RequestCount >= config.MaxRequestsPerHour {
+	if currentUse.RequestCount >= config.MaxRequestsPerHour {
 		return false, nil
 	}
 
 	return true, nil
 }
 
+// TrackUsageFile saves interaction data in file.
 func TrackUsageFile(virtualKey string, provider string, requestTimeMs int64) error {
 	usageMutex.Lock()
 	defer usageMutex.Unlock()
 
+	// Read current interaction database.
 	usageMap = make(map[string]*models.Usage)
 	bytes, err := os.ReadFile(config.UsageFile)
 	if err == nil {
@@ -77,8 +81,9 @@ func TrackUsageFile(virtualKey string, provider string, requestTimeMs int64) err
 		}
 	}
 
+	// Update the database in correct form of data saved.
 	now := time.Now().UTC()
-	u, exists := usageMap[virtualKey]
+	currentUse, exists := usageMap[virtualKey]
 	if !exists {
 		usageMap[virtualKey] = &models.Usage{
 			Provider:           provider,
@@ -88,18 +93,19 @@ func TrackUsageFile(virtualKey string, provider string, requestTimeMs int64) err
 			LastReset:          now,
 		}
 	} else {
-		if now.Sub(u.LastReset) > time.Hour {
-			u.RequestCount = 1
-			u.TotalRequestTimeMs = requestTimeMs
-			u.LastReset = now
+		if now.Sub(currentUse.LastReset) > time.Hour {
+			currentUse.RequestCount = 1
+			currentUse.TotalRequestTimeMs = requestTimeMs
+			currentUse.LastReset = now
 		} else {
-			u.RequestCount++
-			u.TotalRequestTimeMs += requestTimeMs
+			currentUse.RequestCount++
+			currentUse.TotalRequestTimeMs += requestTimeMs
 		}
-		u.Provider = provider
-		u.LastReset = now
+		currentUse.Provider = provider
+		currentUse.LastReset = now
 	}
 
+	// Update database
 	updatedBytes, err := json.MarshalIndent(usageMap, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal usage map: %w", err)
