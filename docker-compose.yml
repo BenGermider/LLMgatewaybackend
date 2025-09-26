@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keys.json:/home/appuser/keys.json
+      - ./usage.json:/home/appuser/usage.json
+    restart: unless-stopped

@@ -1,4 +1,4 @@
-package main
+package handlers
 
 import (
 	"bytes"
@@ -12,30 +12,21 @@ import (
 	"time"
 )
 
+import (
+	"llmgatewaybackend/internal/config"
+	"llmgatewaybackend/internal/models"
+	"llmgatewaybackend/internal/services"
+)
+
 const (
 	RequestTimeout = 20 * time.Second
 )
 
-type RequestBody struct {
-	Prompt string `json:"prompt"`
-}
-
-type Usage struct {
-	Provider           string
-	VirtualKey         string
-	TotalRequestTimeMs int64
-	RequestCount       int
-	TokensUsed         int
-	LastReset          time.Time
-}
-
-var usageMap = make(map[string]*Usage)
+var usageMap = make(map[string]*models.Usage)
 var usageMutex = &sync.Mutex{}
 
-const MaxRequestsPerHour = 100
-
 // validateRequest reads and parses the request body
-func validateRequest(r *http.Request) (*RequestBody, int, error) {
+func validateRequest(r *http.Request) (*models.RequestBody, int, error) {
 	if r.Method != http.MethodPost {
 		return nil, http.StatusBadRequest, fmt.Errorf("only POST method allowed")
 	}
@@ -51,7 +42,7 @@ func validateRequest(r *http.Request) (*RequestBody, int, error) {
 	}()
 
 	// Parse JSON
-	var req RequestBody
+	var req models.RequestBody
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err)
 	}
@@ -68,8 +59,8 @@ func getBearerToken(r *http.Request) (string, bool) {
 	return "", false
 }
 
-func extractProviderAndKey(r *http.Request, keysFile string) <-chan KeyDataVirtualKey {
-	resultChan := make(chan KeyDataVirtualKey)
+func extractProviderAndKey(r *http.Request, keysFile string) <-chan models.KeyDataVirtualKey {
+	resultChan := make(chan models.KeyDataVirtualKey)
 
 	go func() {
 		defer close(resultChan)
@@ -82,13 +73,13 @@ func extractProviderAndKey(r *http.Request, keysFile string) <-chan KeyDataVirtu
 		}
 
 		virtualKey, _ := getBearerToken(r)
-		ch := GetKeyDataAsync(keysFile, virtualKey)
+		ch := config.GetKeyDataAsync(keysFile, virtualKey)
 		keyData, found := <-ch
 		if !found {
 			return
 		}
 
-		resultChan <- KeyDataVirtualKey{
+		resultChan <- models.KeyDataVirtualKey{
 			KeyData:    keyData,
 			VirtualKey: virtualKey,
 		}
@@ -98,17 +89,17 @@ func extractProviderAndKey(r *http.Request, keysFile string) <-chan KeyDataVirtu
 }
 
 // extractKeyData wraps the existing extractProviderAndKey call
-func extractKeyData(r *http.Request) (KeyDataVirtualKey, error) {
-	ch := extractProviderAndKey(r, KEYS_JSON)
+func extractKeyData(r *http.Request) (models.KeyDataVirtualKey, error) {
+	ch := extractProviderAndKey(r, config.KeysJson)
 	keyData, ok := <-ch
 	if !ok {
-		return KeyDataVirtualKey{}, fmt.Errorf("unauthorized: invalid or missing API key")
+		return models.KeyDataVirtualKey{}, fmt.Errorf("unauthorized: invalid or missing API key")
 	}
 	return keyData, nil
 }
 
 // sendToProvider sends the request body to the LLM provider concurrently
-func sendToProvider(r *http.Request, keyData KeyData, body []byte) (<-chan *http.Response, <-chan error) {
+func sendToProvider(r *http.Request, keyData models.KeyData, body []byte) (<-chan *http.Response, <-chan error) {
 	respChan := make(chan *http.Response, 1)
 	errChan := make(chan error, 1)
 
@@ -116,7 +107,7 @@ func sendToProvider(r *http.Request, keyData KeyData, body []byte) (<-chan *http
 		defer close(respChan)
 		defer close(errChan)
 
-		req, err := http.NewRequest("POST", chatProviders[keyData.Provider], bytes.NewBuffer(body))
+		req, err := http.NewRequest("POST", config.ChatProviders[keyData.Provider], bytes.NewBuffer(body))
 		if err != nil {
 			errChan <- err
 			return
@@ -171,7 +162,7 @@ func forwardResponse(w http.ResponseWriter, resp *http.Response) ([]byte, error)
 	return body, nil
 }
 
-func chatCompletion(w http.ResponseWriter, r *http.Request) {
+func ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	reqBody, code, err := validateRequest(r)
 	if code != http.StatusOK {
@@ -191,11 +182,32 @@ func chatCompletion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	if canSend, _ := canSendMessage(keyDataVirtualKey.VirtualKey, keyDataVirtualKey.KeyData.Provider); canSend == false {
-		http.Error(w, err.Error(), http.StatusTooManyRequests)
+	if canSend, sendErr := services.CanSendMessage(keyDataVirtualKey.VirtualKey, keyDataVirtualKey.KeyData.Provider); canSend == false {
+		errorMsg := "Rate limit exceeded"
+		if sendErr != nil {
+			errorMsg = sendErr.Error()
+		}
+		http.Error(w, errorMsg, http.StatusTooManyRequests)
 		return
 	}
-	usageLog, err := json.MarshalIndent(usageMap[keyDataVirtualKey.VirtualKey], "", "  ")
+
+	// FIX: Add nil check and initialization
+	usageMutex.Lock()
+	usage, exists := usageMap[keyDataVirtualKey.VirtualKey]
+	if !exists || usage == nil {
+		usageMap[keyDataVirtualKey.VirtualKey] = &models.Usage{
+			Provider:           keyDataVirtualKey.KeyData.Provider,
+			VirtualKey:         keyDataVirtualKey.VirtualKey,
+			TotalRequestTimeMs: 0,
+			RequestCount:       0,
+			TokensUsed:         0,
+			LastReset:          time.Now(),
+		}
+		usage = usageMap[keyDataVirtualKey.VirtualKey]
+	}
+	usageMutex.Unlock()
+
+	usageLog, err := json.MarshalIndent(usage, "", "  ")
 	if err != nil {
 		log.Println("Failed to marshal log:", err)
 	} else {
@@ -222,11 +234,11 @@ func chatCompletion(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if trackErr := trackUsageFile(keyDataVirtualKey.VirtualKey, keyDataVirtualKey.KeyData.Provider, totalTime); trackErr != nil {
+		if trackErr := services.TrackUsageFile(keyDataVirtualKey.VirtualKey, keyDataVirtualKey.KeyData.Provider, totalTime); trackErr != nil {
 			log.Println("Failed to track usage file:", trackErr)
 		}
 
-		outputLog := Log{
+		outputLog := models.Log{
 			Timestamp:  start.UTC().Format("2006-01-02T15:04:05.000Z"),
 			VirtualKey: keyDataVirtualKey.VirtualKey,
 			Provider:   keyDataVirtualKey.KeyData.Provider,

@@ -1,26 +1,23 @@
-package main
+package handlers
 
 import (
 	"encoding/json"
+	"llmgatewaybackend/internal/models"
 	"log"
 	"net/http"
 	"os"
+
+	"llmgatewaybackend/internal/config"
 )
 
-type Metrics struct {
-	TotalRequests       int64            `json:"total_requests"`
-	RequestsPerProvider map[string]int64 `json:"requests_per_provider"`
-	AverageResponseTime float64          `json:"average_response_time_ms"`
-}
-
-func metricsHandler(w http.ResponseWriter, r *http.Request) {
-	bytes, err := os.ReadFile(USAGE_FILE)
+func MetricsHandler(w http.ResponseWriter, r *http.Request) {
+	bytes, err := os.ReadFile(config.UsageFile)
 	if err != nil {
 		http.Error(w, "Failed to read logs file", http.StatusInternalServerError)
 		return
 	}
 
-	var logsMap map[string]Usage
+	var logsMap map[string]models.Usage
 	if err := json.Unmarshal(bytes, &logsMap); err != nil {
 		http.Error(w, "Failed to parse logs", http.StatusInternalServerError)
 		return
@@ -34,7 +31,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	totalDuration := int64(0)
-	metrics := Metrics{
+	metrics := models.Metrics{
 		RequestsPerProvider: make(map[string]int64),
 	}
 
