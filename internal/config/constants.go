@@ -1,11 +1,18 @@
 package config
 
-const (
-	PORT      = ":8080"
-	KeysJson  = "keys.json"
-	UsageFile = "usage.json"
+import "time"
 
+const (
+	PORT               = ":8080"
+	KeysJson           = "keys.json"
+	UsageFile          = "usage.json"
+	RequestTimeout     = 20 * time.Second
 	MaxRequestsPerHour = 100
+	Authorization      = "Authorization"
+	TimeFormat         = "2006-01-02T15:04:05.000Z"
+	Bearer             = "Bearer "
+	ApplicationJson    = "application/json"
+	ContentType        = "Content-Type"
 )
 
 var ChatProviders = map[string]string{

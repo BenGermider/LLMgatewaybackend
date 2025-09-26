@@ -36,8 +36,14 @@ type Metrics struct {
 	AverageResponseTime float64          `json:"average_response_time_ms"`
 }
 
+type ChatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 type RequestBody struct {
-	Prompt string `json:"prompt"`
+	Model    string        `json:"model"`
+	Messages []ChatMessage `json:"messages"`
 }
 
 type Usage struct {

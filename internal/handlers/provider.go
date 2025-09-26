@@ -11,6 +11,7 @@ import (
 	"llmgatewaybackend/internal/models"
 )
 
+// getProvider extracts the provider parameter and returns it's url.
 func getProvider(r *http.Request) (string, string) {
 	reqProvider := r.URL.Query().Get("provider")
 	if reqProvider == "" {
@@ -24,8 +25,8 @@ func getProvider(r *http.Request) (string, string) {
 	return reqProvider, providerUrl
 }
 
+// providerRequest sends the http request to the LLM.
 func providerRequest(url string) (*http.Response, error) {
-
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -35,13 +36,16 @@ func providerRequest(url string) (*http.Response, error) {
 	return resp, nil
 }
 
+// HealthCheck handler. Sends ping to LLM and returns result to user. Handles exceptions.
 func HealthCheck(w http.ResponseWriter, r *http.Request) {
 
+	// Checks whether the input is valid.
 	provider, providerUrl := getProvider(r)
 	if provider == "" {
 		http.Error(w, "Unrecognized provider", http.StatusBadRequest)
 	}
 
+	// Ping LLM.
 	resp, respError := providerRequest(providerUrl)
 	if respError != nil {
 		http.Error(w, "Provider unavailable", http.StatusServiceUnavailable)
@@ -54,6 +58,7 @@ func HealthCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}(resp.Body)
 
+	// Builds the response to the user.
 	available := respError == nil && resp.StatusCode < 500
 	logEntry := models.HealthLog{
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
@@ -69,7 +74,8 @@ func HealthCheck(w http.ResponseWriter, r *http.Request) {
 		log.Println(string(logJSON))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	// Response.
+	w.Header().Set(config.ContentType, config.ApplicationJson)
 	encoderErr := json.NewEncoder(w).Encode(map[string]interface{}{
 		"provider":  provider,
 		"available": respError == nil && resp.StatusCode < 500,

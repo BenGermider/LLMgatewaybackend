@@ -18,10 +18,6 @@ import (
 	"llmgatewaybackend/internal/services"
 )
 
-const (
-	RequestTimeout = 20 * time.Second
-)
-
 var usageMap = make(map[string]*models.Usage)
 var usageMutex = &sync.Mutex{}
 
@@ -50,28 +46,29 @@ func validateRequest(r *http.Request) (*models.RequestBody, int, error) {
 	return &req, http.StatusOK, nil
 }
 
+// getBearerToken extracts the virtual key from the header.
 func getBearerToken(r *http.Request) (string, bool) {
-	auth := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if len(auth) > len(prefix) && strings.EqualFold(auth[:len(prefix)], prefix) {
-		return strings.TrimSpace(auth[len(prefix):]), true
+	auth := r.Header.Get(config.Authorization)
+	if len(auth) > len(config.Bearer) && strings.EqualFold(auth[:len(config.Bearer)], config.Bearer) {
+		return strings.TrimSpace(auth[len(config.Bearer):]), true
 	}
 	return "", false
 }
 
+// extractProviderAndKey extracts virtual, api key and provider.
 func extractProviderAndKey(r *http.Request, keysFile string) <-chan models.KeyDataVirtualKey {
 	resultChan := make(chan models.KeyDataVirtualKey)
 
 	go func() {
 		defer close(resultChan)
 
-		authHeader := r.Header.Get("Authorization")
-		const bearerPrefix = "Bearer "
-		if len(authHeader) <= len(bearerPrefix) || !strings.EqualFold(authHeader[:len(bearerPrefix)], bearerPrefix) {
-			// Invalid header, just exit
+		// Exception of invalid header.
+		authHeader := r.Header.Get(config.Authorization)
+		if len(authHeader) <= len(config.Bearer) || !strings.EqualFold(authHeader[:len(config.Bearer)], config.Bearer) {
 			return
 		}
 
+		// Key extraction.
 		virtualKey, _ := getBearerToken(r)
 		ch := config.GetKeyDataAsync(keysFile, virtualKey)
 		keyData, found := <-ch
@@ -93,7 +90,7 @@ func extractKeyData(r *http.Request) (models.KeyDataVirtualKey, error) {
 	ch := extractProviderAndKey(r, config.KeysJson)
 	keyData, ok := <-ch
 	if !ok {
-		return models.KeyDataVirtualKey{}, fmt.Errorf("unauthorized: invalid or missing API key")
+		return models.KeyDataVirtualKey{}, fmt.Errorf("Unauthorized: invalid or missing API key")
 	}
 	return keyData, nil
 }
@@ -113,9 +110,9 @@ func sendToProvider(r *http.Request, keyData models.KeyData, body []byte) (<-cha
 			return
 		}
 
-		// Copy headers except Authorization
+		// Keep headers the same, just change the virtual key with api key.
 		for name, values := range r.Header {
-			if strings.EqualFold(name, "Authorization") {
+			if strings.EqualFold(name, config.Authorization) {
 				continue
 			}
 			for _, v := range values {
@@ -123,7 +120,8 @@ func sendToProvider(r *http.Request, keyData models.KeyData, body []byte) (<-cha
 			}
 		}
 
-		req.Header.Set("Authorization", "Bearer "+keyData.ApiKey)
+		// Send the correct http request to the LLM provider.
+		req.Header.Set(config.Authorization, config.Bearer+keyData.ApiKey)
 		client := &http.Client{Timeout: 15 * time.Second}
 		resp, err := client.Do(req)
 		if err != nil {
@@ -137,7 +135,7 @@ func sendToProvider(r *http.Request, keyData models.KeyData, body []byte) (<-cha
 	return respChan, errChan
 }
 
-// forwardResponse writes the provider response to the client
+// forwardResponse writes the provider response to the user.
 func forwardResponse(w http.ResponseWriter, resp *http.Response) ([]byte, error) {
 	defer func() {
 		if closeError := resp.Body.Close(); closeError != nil {
@@ -155,6 +153,7 @@ func forwardResponse(w http.ResponseWriter, resp *http.Response) ([]byte, error)
 		}
 	}
 
+	// Deliver response to user.
 	w.WriteHeader(resp.StatusCode)
 	if _, writeError := w.Write(body); writeError != nil {
 		return nil, fmt.Errorf("failed to write response body to client: %w", writeError)
@@ -162,13 +161,16 @@ func forwardResponse(w http.ResponseWriter, resp *http.Response) ([]byte, error)
 	return body, nil
 }
 
+// ChatCompletion handler for sending user requests to the LLM.
 func ChatCompletion(w http.ResponseWriter, r *http.Request) {
+
+	// Validation of the request.
 	start := time.Now()
 	reqBody, code, err := validateRequest(r)
 	if code != http.StatusOK {
 		w.WriteHeader(code)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set(config.ContentType, config.ApplicationJson)
 			encodeErr := json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			if encodeErr != nil {
 				log.Println("Failed to encode JSON error:", encodeErr)
@@ -177,11 +179,14 @@ func ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Important key extraction to change the virtual key to api key.
 	keyDataVirtualKey, err := extractKeyData(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
+
+	// Making sure user can send the request and did not exceed limit.
 	if canSend, sendErr := services.CanSendMessage(keyDataVirtualKey.VirtualKey, keyDataVirtualKey.KeyData.Provider); canSend == false {
 		errorMsg := "Rate limit exceeded"
 		if sendErr != nil {
@@ -191,7 +196,7 @@ func ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// FIX: Add nil check and initialization
+	// Save interaction with LLM.
 	usageMutex.Lock()
 	usage, exists := usageMap[keyDataVirtualKey.VirtualKey]
 	if !exists || usage == nil {
@@ -216,6 +221,7 @@ func ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	body, _ := json.Marshal(reqBody)
 
+	// Send request to LLM provider.
 	respChan, errChan := sendToProvider(r, keyDataVirtualKey.KeyData, body)
 
 	totalTime := time.Since(start).Milliseconds()
@@ -224,6 +230,7 @@ func ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	case resp := <-respChan:
 
+		// Handling errors in response from provider.
 		if resp == nil {
 			http.Error(w, "Failed to forward provider response", http.StatusBadGateway)
 		}
@@ -234,12 +241,14 @@ func ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Saving the interaction in a Json file database (for later metrics).
 		if trackErr := services.TrackUsageFile(keyDataVirtualKey.VirtualKey, keyDataVirtualKey.KeyData.Provider, totalTime); trackErr != nil {
 			log.Println("Failed to track usage file:", trackErr)
 		}
 
+		// Create a log output to the server.
 		outputLog := models.Log{
-			Timestamp:  start.UTC().Format("2006-01-02T15:04:05.000Z"),
+			Timestamp:  start.UTC().Format(config.TimeFormat),
 			VirtualKey: keyDataVirtualKey.VirtualKey,
 			Provider:   keyDataVirtualKey.KeyData.Provider,
 			Method:     r.Method,
@@ -259,7 +268,8 @@ func ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	case err := <-errChan:
 		http.Error(w, err.Error(), http.StatusBadGateway)
 
-	case <-time.After(RequestTimeout):
+		// Handling potential errors in provider / server.
+	case <-time.After(config.RequestTimeout):
 		http.Error(w, "Timeout calling provider", http.StatusGatewayTimeout)
 	}
 }
