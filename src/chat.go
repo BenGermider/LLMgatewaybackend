@@ -191,11 +191,32 @@ func chatCompletion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	if canSend, _ := canSendMessage(keyDataVirtualKey.VirtualKey, keyDataVirtualKey.KeyData.Provider); canSend == false {
-		http.Error(w, err.Error(), http.StatusTooManyRequests)
+	if canSend, sendErr := canSendMessage(keyDataVirtualKey.VirtualKey, keyDataVirtualKey.KeyData.Provider); canSend == false {
+		errorMsg := "Rate limit exceeded"
+		if sendErr != nil {
+			errorMsg = sendErr.Error()
+		}
+		http.Error(w, errorMsg, http.StatusTooManyRequests)
 		return
 	}
-	usageLog, err := json.MarshalIndent(usageMap[keyDataVirtualKey.VirtualKey], "", "  ")
+
+	// FIX: Add nil check and initialization
+	usageMutex.Lock()
+	usage, exists := usageMap[keyDataVirtualKey.VirtualKey]
+	if !exists || usage == nil {
+		usageMap[keyDataVirtualKey.VirtualKey] = &Usage{
+			Provider:           keyDataVirtualKey.KeyData.Provider,
+			VirtualKey:         keyDataVirtualKey.VirtualKey,
+			TotalRequestTimeMs: 0,
+			RequestCount:       0,
+			TokensUsed:         0,
+			LastReset:          time.Now(),
+		}
+		usage = usageMap[keyDataVirtualKey.VirtualKey]
+	}
+	usageMutex.Unlock()
+
+	usageLog, err := json.MarshalIndent(usage, "", "  ")
 	if err != nil {
 		log.Println("Failed to marshal log:", err)
 	} else {

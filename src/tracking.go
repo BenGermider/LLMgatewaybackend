@@ -17,6 +17,9 @@ func initUsageFile() error {
 	if err := os.WriteFile(USAGE_FILE, bytes, 0644); err != nil {
 		return fmt.Errorf("failed to write usage file: %w", err)
 	}
+
+	// Also initialize the in-memory map
+	usageMap = make(map[string]*Usage)
 	return nil
 }
 
